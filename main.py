@@ -1,317 +1,156 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime
-import base64
-import json
+from typing import Dict
+from fastapi.middleware.cors import CORSMiddleware
+import uuid
 
-app = FastAPI(title="Sahayak API", version="2.0")
+app = FastAPI()
 
-# Allow frontend to talk to backend
+# --- CORS (needed for GitHub Pages frontend) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For production: ["https://yourdomain.com"]
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory storage for action history
-action_history: List[dict] = []
+# -----------------------
+# In-memory mock storage
+# -----------------------
+FORMS: Dict[str, dict] = {}
+ANSWERS: Dict[str, dict] = {}
 
-class AnalyzeRequest(BaseModel):
-    user_command: str
-    screenshot: str  # base64 image
-    url: Optional[str] = None
+# -----------------------
+# Request Models
+# -----------------------
 
-class ActionResponse(BaseModel):
-    action: str
-    selector: str
-    value: str
-    confidence: float
-    timestamp: str
-    explanation: str
+class IntentRequest(BaseModel):
+    language: str
+    user_text: str
 
-class HistoryResponse(BaseModel):
-    total: int
-    actions: List[dict]
 
-@app.post("/analyze", response_model=ActionResponse)
-def analyze_page(data: AnalyzeRequest):
-    """
-    Analyzes user command and screenshot to determine automation action.
-    
-    Current implementation uses pattern matching.
-    TODO: Replace with Vision AI (Claude/GPT-4V) for production.
-    """
-    
-    command = data.user_command.lower()
-    timestamp = datetime.now().isoformat()
-    
-    # Default response
-    response = {
-        "action": "none",
-        "selector": "",
-        "value": "",
-        "confidence": 0.0,
-        "timestamp": timestamp,
-        "explanation": "Command not recognized"
+class FormSubmitRequest(BaseModel):
+    language: str
+    source_type: str  # "link" or "file"
+    form_link: str | None = None
+    file_name: str | None = None
+
+
+class NextQuestionRequest(BaseModel):
+    form_id: str
+    language: str
+
+
+class AnswerSubmitRequest(BaseModel):
+    form_id: str
+    field_id: str
+    answer: str
+    language: str
+
+
+# -----------------------
+# 1️⃣ Analyze Intent
+# -----------------------
+@app.post("/analyze-intent")
+def analyze_intent(req: IntentRequest):
+    text = req.user_text.lower()
+
+    if "form" in text or "bhar" in text or "fill" in text:
+        return {"intent": "fill_form"}
+
+    if "hello" in text or "hi" in text or "namaste" in text:
+        return {"intent": "greeting"}
+
+    return {"intent": "unknown"}
+
+
+# -----------------------
+# 2️⃣ Submit Form (Link/File)
+# -----------------------
+@app.post("/submit-form")
+def submit_form(req: FormSubmitRequest):
+    form_id = str(uuid.uuid4())
+
+    # Mock form schema (POC-safe)
+    FORMS[form_id] = {
+        "steps": [
+            {
+                "field_id": "full_name",
+                "question_hi": "Aapka poora naam kya hai?",
+                "question_en": "What is your full name?",
+                "selector": "input[name='name']"
+            },
+            {
+                "field_id": "dob",
+                "question_hi": "Aapki janam tithi kya hai?",
+                "question_en": "What is your date of birth?",
+                "selector": "input[name='dob']"
+            }
+        ],
+        "current_step": 0
     }
-    
-    # Pattern matching logic (replace with AI)
-    if "naam" in command or "name" in command:
-        # Extract value from command
-        value = "Mohit"  # Default
-        
-        # Try to extract custom value
-        if "with" in command:
-            parts = command.split("with")
-            if len(parts) > 1:
-                # Extract text between "with" and next keyword
-                value_part = parts[1].split("and")[0].strip()
-                value = value_part
-        
-        response = {
-            "action": "type",
-            "selector": "input[name='name'], input[id='name'], input[placeholder*='name' i]",
-            "value": value,
-            "confidence": 0.85,
-            "timestamp": timestamp,
-            "explanation": f"Detected name field input with value: {value}"
-        }
-    
-    elif "email" in command or "e-mail" in command:
-        value = "user@example.com"
-        
-        if "with" in command:
-            parts = command.split("with")
-            if len(parts) > 1:
-                value_part = parts[1].split("and")[0].strip()
-                value = value_part
-        
-        response = {
-            "action": "type",
-            "selector": "input[type='email'], input[name='email'], input[id='email']",
-            "value": value,
-            "confidence": 0.90,
-            "timestamp": timestamp,
-            "explanation": f"Detected email field input with value: {value}"
-        }
-    
-    elif "phone" in command or "mobile" in command:
-        value = "1234567890"
-        
-        if "with" in command:
-            parts = command.split("with")
-            if len(parts) > 1:
-                value_part = parts[1].split("and")[0].strip()
-                value = value_part
-        
-        response = {
-            "action": "type",
-            "selector": "input[type='tel'], input[name*='phone' i], input[id*='phone' i]",
-            "value": value,
-            "confidence": 0.85,
-            "timestamp": timestamp,
-            "explanation": f"Detected phone field input with value: {value}"
-        }
-    
-    elif any(word in command for word in ["next", "submit", "continue", "proceed"]):
-        response = {
-            "action": "click",
-            "selector": "button[type='submit'], button:contains('Next'), button:contains('Submit'), input[type='submit']",
-            "value": "",
-            "confidence": 0.80,
-            "timestamp": timestamp,
-            "explanation": "Detected submit/next button click action"
-        }
-    
-    elif "click" in command:
-        # Extract button text if specified
-        button_text = "button"
-        if "button" in command:
-            parts = command.split("button")
-            if len(parts) > 0 and parts[0].strip():
-                button_text = parts[0].replace("click", "").strip()
-        
-        response = {
-            "action": "click",
-            "selector": f"button:contains('{button_text}'), a:contains('{button_text}')",
-            "value": "",
-            "confidence": 0.75,
-            "timestamp": timestamp,
-            "explanation": f"Detected click action on element containing: {button_text}"
-        }
-    
-    elif "scroll" in command:
-        direction = "down"
-        if "up" in command:
-            direction = "up"
-        
-        response = {
-            "action": "scroll",
-            "selector": "window",
-            "value": direction,
-            "confidence": 0.95,
-            "timestamp": timestamp,
-            "explanation": f"Detected scroll {direction} action"
-        }
-    
-    elif "wait" in command:
-        duration = "2"  # Default 2 seconds
-        
-        # Try to extract number
-        import re
-        numbers = re.findall(r'\d+', command)
-        if numbers:
-            duration = numbers[0]
-        
-        response = {
-            "action": "wait",
-            "selector": "",
-            "value": duration,
-            "confidence": 1.0,
-            "timestamp": timestamp,
-            "explanation": f"Detected wait action for {duration} seconds"
-        }
-    
-    # Store in history
-    action_record = {
-        "command": data.user_command,
-        "url": data.url,
-        "response": response,
-        "timestamp": timestamp
-    }
-    action_history.append(action_record)
-    
-    # Keep only last 100 actions
-    if len(action_history) > 100:
-        action_history.pop(0)
-    
-    return response
 
-@app.get("/history", response_model=HistoryResponse)
-def get_history(limit: int = 20):
-    """
-    Retrieves action history.
-    """
-    recent_actions = action_history[-limit:] if len(action_history) > limit else action_history
-    
+    ANSWERS[form_id] = {}
+
     return {
-        "total": len(action_history),
-        "actions": list(reversed(recent_actions))  # Most recent first
+        "form_id": form_id,
+        "total_fields": len(FORMS[form_id]["steps"]),
+        "message": "form_loaded"
     }
 
-@app.delete("/history")
-def clear_history():
-    """
-    Clears action history.
-    """
-    action_history.clear()
-    return {"status": "success", "message": "History cleared"}
 
-@app.post("/validate")
-def validate_selector(selector: str):
-    """
-    Validates CSS selector syntax.
-    """
-    try:
-        # Basic validation - in production use a proper CSS parser
-        if not selector:
-            return {"valid": False, "error": "Empty selector"}
-        
-        # Check for common issues
-        if selector.count('[') != selector.count(']'):
-            return {"valid": False, "error": "Mismatched brackets"}
-        
-        if selector.count('(') != selector.count(')'):
-            return {"valid": False, "error": "Mismatched parentheses"}
-        
-        return {"valid": True, "selector": selector}
-    
-    except Exception as e:
-        return {"valid": False, "error": str(e)}
+# -----------------------
+# 3️⃣ Get Next Question
+# -----------------------
+@app.post("/next-question")
+def next_question(req: NextQuestionRequest):
+    form = FORMS.get(req.form_id)
 
-@app.get("/stats")
-def get_stats():
-    """
-    Returns usage statistics.
-    """
-    if not action_history:
+    if not form:
+        return {"status": "error", "message": "Form not found"}
+
+    step_index = form["current_step"]
+
+    if step_index >= len(form["steps"]):
         return {
-            "total_actions": 0,
-            "action_types": {},
-            "success_rate": 0,
-            "most_common_command": None
+            "status": "completed",
+            "message": (
+                "Form poora ho gaya" if req.language == "hi"
+                else "Form completed"
+            )
         }
-    
-    # Calculate statistics
-    action_types = {}
-    commands = []
-    
-    for record in action_history:
-        action_type = record["response"]["action"]
-        action_types[action_type] = action_types.get(action_type, 0) + 1
-        commands.append(record["command"])
-    
-    # Most common command
-    most_common = max(set(commands), key=commands.count) if commands else None
-    
+
+    step = form["steps"][step_index]
+
     return {
-        "total_actions": len(action_history),
-        "action_types": action_types,
-        "success_rate": sum(1 for r in action_history if r["response"]["action"] != "none") / len(action_history) * 100,
-        "most_common_command": most_common
+        "field_id": step["field_id"],
+        "question_text": (
+            step["question_hi"] if req.language == "hi"
+            else step["question_en"]
+        ),
+        "selector_hint": step["selector"]
     }
 
-@app.get("/health")
-def health_check():
-    """
-    Detailed health check endpoint.
-    """
-    return {
-        "status": "healthy",
-        "service": "Sahayak Automation API",
-        "version": "2.0",
-        "timestamp": datetime.now().isoformat(),
-        "actions_in_history": len(action_history)
-    }
 
+# -----------------------
+# 4️⃣ Submit Answer
+# -----------------------
+@app.post("/submit-answer")
+def submit_answer(req: AnswerSubmitRequest):
+    form = FORMS.get(req.form_id)
+
+    if not form:
+        return {"status": "error", "message": "Form not found"}
+
+    ANSWERS[req.form_id][req.field_id] = req.answer
+    form["current_step"] += 1
+
+    return {"status": "saved"}
+
+
+# -----------------------
+# Health Check
+# -----------------------
 @app.get("/")
 def root():
-    """
-    API information endpoint.
-    """
-    return {
-        "status": "Sahayak backend running",
-        "version": "2.0",
-        "endpoints": {
-            "analyze": "POST /analyze - Analyze command and screenshot",
-            "history": "GET /history?limit=20 - Get action history",
-            "clear_history": "DELETE /history - Clear action history",
-            "validate": "POST /validate - Validate CSS selector",
-            "stats": "GET /stats - Get usage statistics",
-            "health": "GET /health - Detailed health check"
-        },
-        "documentation": "/docs"
-    }
-
-# Error handlers
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return {
-        "error": exc.detail,
-        "status_code": exc.status_code
-    }
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    return {
-        "error": "Internal server error",
-        "detail": str(exc)
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {"status": "Sahayak backend running"}
